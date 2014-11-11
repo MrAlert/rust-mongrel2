@@ -3,7 +3,7 @@ name = "rust-mongrel2"
 version = "0.3.0"
 authors = ["erick.tryzelaar@gmail.com"]
 
-[[lib]]
+[lib]
 name = "mongrel2"
 
 [[example]]
