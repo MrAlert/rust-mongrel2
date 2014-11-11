@@ -1,4 +1,3 @@
-extern crate std;
 extern crate zmq;
 extern crate mongrel2;
 

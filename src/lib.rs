@@ -25,7 +25,7 @@ pub enum Error {
     TNetStringError(tnetstring::Error),
     JsonError(json::BuilderError),
     ZmqError(zmq::Error),
-    IoError(IoError),
+    RustIoError(IoError),
 }
 
 pub struct Connection {
@@ -106,23 +106,23 @@ impl Connection {
         let mut wr = MemWriter::new();
         match write!(wr, "{} ", uuid) {
             Ok(()) => { }
-            Err(err) => { return Err(IoError(err)); }
+            Err(err) => { return Err(RustIoError(err)); }
         }
 
         let id = id.connect(" ").into_bytes();
         match tnetstring::to_writer(&mut wr, &tnetstring::Str(id)) {
             Ok(()) => { }
-            Err(err) => { return Err(IoError(err)); }
+            Err(err) => { return Err(RustIoError(err)); }
         }
 
         match write!(wr, " ") {
             Ok(()) => { }
-            Err(err) => { return Err(IoError(err)); }
+            Err(err) => { return Err(RustIoError(err)); }
         }
 
         match wr.write(body) {
             Ok(()) => { }
-            Err(err) => { return Err(IoError(err)); }
+            Err(err) => { return Err(RustIoError(err)); }
         }
 
         match self.rep.send(wr.unwrap().as_slice(), 0) {
@@ -145,26 +145,26 @@ impl Connection {
 
         match write!(wr, "HTTP/1.1 {} {}\r\n", code, status) {
             Ok(()) => { }
-            Err(err) => { return Err(IoError(err)); }
+            Err(err) => { return Err(RustIoError(err)); }
         }
 
         for (key, values) in headers.iter() {
             for value in values.iter() {
                 match write!(wr, "{}: {}\r\n", *key, *value) {
                     Ok(()) => { }
-                    Err(err) => { return Err(IoError(err)); }
+                    Err(err) => { return Err(RustIoError(err)); }
                 }
             };
         }
 
         match write!(wr, "Content-Length: {}\r\n\r\n", body.len()) {
             Ok(()) => { }
-            Err(err) => { return Err(IoError(err)); }
+            Err(err) => { return Err(RustIoError(err)); }
         }
 
         match wr.write(body) {
             Ok(()) => { }
-            Err(err) => { return Err(IoError(err)); }
+            Err(err) => { return Err(RustIoError(err)); }
         }
 
         self.reply(req, wr.unwrap().as_slice())
@@ -187,7 +187,7 @@ pub struct Request {
     pub path: String,
     pub headers: Headers,
     pub body: Vec<u8>,
-    pub json_body: Option<json::Object>,
+    pub json_body: Option<json::JsonObject>,
 }
 
 impl Request {
@@ -195,7 +195,7 @@ impl Request {
         match self.json_body {
             None => false,
             Some(ref map) => {
-                match map.find(&"type".to_string()) {
+                match map.get(&"type".to_string()) {
                     Some(&json::String(ref typ)) => *typ == "disconnect".to_string(),
                     _ => false,
                 }
@@ -204,7 +204,7 @@ impl Request {
     }
 
     pub fn should_close(&self) -> bool {
-        match self.headers.find(&"connection".to_string()) {
+        match self.headers.get(&"connection".to_string()) {
             None => { },
             Some(conn) => {
                 if conn.len() == 1 && conn[0].as_slice() == "close" {
@@ -213,7 +213,7 @@ impl Request {
             }
         }
 
-        match self.headers.find(&"VERSION".to_string()) {
+        match self.headers.get(&"VERSION".to_string()) {
             None => false,
             Some(version) => {
                 version.len() == 1u && version[0].as_slice() == "HTTP/1.0"
@@ -251,7 +251,7 @@ fn parse(bytes: &[u8]) -> Result<Request, Error> {
     };
 
     // Extract out the json body if we have it.
-    let json_body = match headers.find(&"METHOD".to_string()) {
+    let json_body = match headers.get(&"METHOD".to_string()) {
         None => None,
         Some(method) => {
             if method.len() == 1 && method[0].as_slice() == "JSON" {
@@ -287,7 +287,7 @@ fn read_str<R: Reader + Buffer>(rdr: &mut R) -> Option<String> {
                 return Some(s);
             }
             Ok(ch) => {
-                s.push_char(ch);
+                s.push(ch);
             }
             Err(_) => {
                 return None;
@@ -347,10 +347,10 @@ fn parse_headers<R: Reader + Buffer>(rdr: &mut R) -> Result<Headers, Error> {
 fn parse_tnetstring_headers(map: HashMap<Vec<u8>, tnetstring::TNetString>) -> Result<Headers, Error> {
     let mut headers: HashMap<String, Vec<String>> = HashMap::new();
 
-    for (key, value) in map.move_iter() {
+    for (key, value) in map.into_iter() {
         let key = String::from_utf8(key).unwrap();
 
-        let mut values = match headers.pop(&key) {
+        let mut values = match headers.remove(&key) {
             Some(values) => values,
             None => vec!(),
         };
@@ -360,7 +360,7 @@ fn parse_tnetstring_headers(map: HashMap<Vec<u8>, tnetstring::TNetString>) -> Re
                 values.push(String::from_utf8(v).unwrap());
             }
             tnetstring::Vec(vs) => {
-                for v in vs.move_iter() {
+                for v in vs.into_iter() {
                     match v {
                         tnetstring::Str(v) => {
                             values.push(String::from_utf8(v).unwrap());
@@ -378,11 +378,11 @@ fn parse_tnetstring_headers(map: HashMap<Vec<u8>, tnetstring::TNetString>) -> Re
     Ok(headers)
 }
 
-fn parse_json_headers(map: json::Object) -> Result<Headers, Error> {
+fn parse_json_headers(map: json::JsonObject) -> Result<Headers, Error> {
     let mut headers = HashMap::new();
 
     for (key, value) in map.iter() {
-        let mut values = match headers.pop(key) {
+        let mut values = match headers.remove(key) {
             Some(values) => values,
             None => vec!(),
         };
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(request.id.as_slice(), "56");
         assert_eq!(request.headers.len(), 1);
 
-        let value = match request.headers.find_equiv(&"foo") {
+        let value = match request.headers.find_equiv("foo") {
             Some(header_list) => header_list[0].clone(),
             None => "".to_string(),
         };
